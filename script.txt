@@ -1,0 +1,9 @@
+delay 1
+range 2
+setpoint 100
+setpoint 110
+setpoint 120
+delay 2
+setpoint 200
+setpoint 210
+setpoint 220
