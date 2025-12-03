@@ -26,13 +26,18 @@ VERSION = "0.00"
 #####################################################################
 #                                                               DEBUG
 
+# "NOGPIB" makes "OPEN", "WRITE", and "QUERY" functions ineffective
+# "USETEMPFILE" use a local fixed filename for outputs
+# "SINGLE" for one single measurement to test device and connections
+# "LOGGPIB " to display every gpib transactions
+
 _DEBUG = [
     # "ALL",
     # VERBOSE,
     # "NONE",
-    "TEMPFILE",
-    "LOG_GPIB",
-    "NOGPIB",    # GPIB "OPEN", "WRITE", and "QUERY" ineffective
+    "USETEMPFILE",
+    "LOGGPIB",
+    # "NOGPIB"
     # "SINGLE",
 ]
 
@@ -44,16 +49,6 @@ def debug(*flags):
     if flags: return False
     return True
 
-#####################################################################
-#                                                                FILE
-
-def checkpath(fp):
-    if not fp[-1] == '/': fp += '/'
-    if not exists(fp): exit(f"path '{fp}' not found.")
-    if debug(): print(f"path '{fp}' checked.")
-    # done
-    return True
-
 
 #####################################################################
 #                                                                HOST
@@ -63,10 +58,13 @@ if debug(): print(f"identified hostname '{gethostname()}'")
 
 #####################################################################
 #                                                              CONFIG
+# configuration is fixed during measurements
 
 configuration = {
 
-    'PYA042000001': {
+    'PYA042000001': {   # A42 windows-10 experiment-computer
+                        # ----------------------------------
+
         'DEVICENAME'        : "GPIB2::24::INSTR",   # LAKESHORE
         'LAKESHORE_Heater_Resistance': 194.0,       # HEATER RESISTANCE [OHM]
         "FILEPATH"          : "./",                 # DATA FOLDER
@@ -76,12 +74,26 @@ configuration = {
         "TEMPFILENAME"      : 'd.dat',              # DEBUG
     },
 
-    'TOSH135': {
-        'DEVICENAME'        : "GPIB2::24::INSTR",   # LAKESHORE
+    'TOSH135': {        # home linux-mint toshiba-L770-135-laptop
+                        # ---------------------------------------
+    
+        'DEVICENAME'        : None,                 # LAKESHORE
         'LAKESHORE_Heater_Resistance': 194.0,       # HEATER RESISTANCE [OHM]
         "FILEPATH"          : "./",                 # DATA FOLDER
         "LOCALFILEPATH"     : '.',                  # LOCAL FOLDER
-        "SAVINGINTERVALS"   : 10.0,                 # SAVE EVERY 5s
+        "SAVINGINTERVALS"   : 1.0,                  # SAVE EVERY 5s
+        "TEMPFILEPATH"      : '.',                  # DEBUG
+        "TEMPFILENAME"      : 'd.dat',              # DEBUG
+    },
+
+    'LU-CZC2098L9S': {  # A74 windows-11 office-computer
+                        # ------------------------------
+    
+        'DEVICENAME'        : None,                 # LAKESHORE
+        'LAKESHORE_Heater_Resistance': 194.0,       # HEATER RESISTANCE [OHM]
+        "FILEPATH"          : "./",                 # DATA FOLDER
+        "LOCALFILEPATH"     : '.',                  # LOCAL FOLDER
+        "SAVINGINTERVALS"   : 1.0,                  # SAVE EVERY 5s
         "TEMPFILEPATH"      : '.',                  # DEBUG
         "TEMPFILENAME"      : 'd.dat',              # DEBUG
     },
@@ -89,158 +101,8 @@ configuration = {
 }[gethostname().upper()]
 
 
-#####################################################################
-#                                                               SETUP
+if configuration["DEVICENAME"] is None: _DEBUG.append("NOGPIB")
 
-setup = {
-    "MESUREMENTINTERVAL": 2,  # MEASURE DATA EVERY 1s
-}
-
-dn = configuration["DEVICENAME"]
-lfp = configuration["FILEPATH"]
-tfp = configuration["TEMPFILEPATH"]
-
-#####################################################################
-#                                                               FILES
-
-class monitor_file():
-
-    def __init__(self, fp, fn):
-        # record time stamp
-        self.created = strftime(r'%Y%m%dT%H%M%S', localtime())
-        #  new file path (time stamped)
-        fp = fp.rstrip('/')
-        self.fp = f"{fp}/{fn}{self.created}.dat"
-        # force fixed temporary file name for debugging
-        if debug("TEMPFILE"):
-            fp = configuration['TEMPFILEPATH']
-            fn = configuration['TEMPFILENAME']
-            self.fp = f"{fp}/{fn}"
-            # clear file
-            fh = open(self.fp, "w")
-            fh.close()
-        # declare header text and data list
-        self.headertext, self.data = "", []
-        # setup timer
-        self.time = monotonic() + configuration['SAVINGINTERVALS']
-        # done
-        return
-
-    def flushheader(self, fh):
-        fh.write(self.headertext)
-        self.headertext = None
-        return
-
-    def writeheaderblock(self, b):
-        for i, l in enumerate(b.split(f"\n")[1:-1]):
-            if i == 0: n = len(l) - len(l.lstrip())
-            self.headertext += f"# {l[n:]}\n"
-        return
-
-    def savedata(self):
-        if not self.data: return
-        if monotonic() < self.time: return
-        fh = open(self.fp, "a")
-        if self.headertext: self.flushheader(fh)
-        for d in self.data: fh.write(f"{d}\n")
-        fh.close()
-        self.data = []
-        # reset timer
-        self.time = monotonic() + configuration['SAVINGINTERVALS']
-        # done
-        return
-
-    def writedata(self, datastr):
-        # append line of data
-        self.data.append(datastr)
-        # try saving available data
-        self.savedata()
-        # done
-        return
-
-    def flushdata(self):
-        self.time = monotonic()
-        self.savedata()
-        # done
-        return
-
-#####################################################################
-#                                                           LAKESHORE
-
-class LAKESHORE():
-
-    def __init__(self):
-
-        # get resource manager instance
-        rm = pyvisa.ResourceManager()
-        if debug("LOG_GPIB"): print(rm)
-
-        # get list of all visa resources
-        rs = rm.list_resources()
-        if debug("LOG_GPIB"): print(rs)
-
-        lsn = configuration["DEVICENAME"]
-
-        if not lsn in rs:
-            print(f"failed to find instrument at LakeShore address {lsn}.")
-            exit()
-
-        # record configuration
-        self.rm = rm
-        self.lsn = lsn
-        self.hr = configuration["LAKESHORE_Heater_Resistance"]
-
-        # done
-        return
-
-    def Open(self):
-        # get GPIB handle from the LakeShore visa id
-        if debug("LOG_GPIB"): print(f"open_resource('{self.lsn}')")
-        if debug("NOGPIB"):
-            print("skipped...")
-            return
-        self.lsh = self.rm.open_resource(self.lsn)
-        # done
-        return
-
-    def Close(self):
-        # done
-        return
-
-    def Configure(self):
-        # done
-        return
-
-    def Start(self):
-        return
-
-    def Stop(self):
-        return
-
-    def write(self, w):
-        if debug("LOG_GPIB"): print(f"{self.lsn} write '{w}'")
-        if debug("NOGPIB"):
-            print("skipped...")
-            return
-        self.lsh.write(w)
-        return
-
-    def query(self, w):
-        if debug("LOG_GPIB"): print(f"{self.lsn} query '{w}'")
-        if debug("NOGPIB"):
-            print("skipped... return '1'")
-            return "1"
-        return self.lsh.query(w)
-
-    def read(self):
-        T1R = float(self.query(f"RDGR? 1")) # THERMOMETER 1 RESISTANCE
-        T1T = float(self.query(f"RDGK? 1")) # THERMOMETER 1 TEMPERATURE
-        TSP = float(self.query(f"SETP?")) # TEMPERATURE SET POINT
-        HTR = int(self.query(f"HTRRNG?")) # HEATER RANGE
-        HTV = float(self.query(f"HTR?"))  # HEATER VALUE
-        # if debug("NOGPIB"): # return bogus data
-        #     return (1.0, 1.0, 1.0, 1, 1.0)
-        return (T1R, T1T, TSP, HTR, HTV)
 
 #####################################################################
 #                                                              SINGLE
@@ -313,6 +175,249 @@ if debug("single"):
 
     exit()
 
+
+#####################################################################
+#                                                               SETUP
+# setup can be updated during measurements
+
+setup = {
+
+    'PYA042000001': {   # A42 windows-10 experiment-computer
+                        # ----------------------------------
+
+        "MESUREMENTINTERVAL": 2,  # NEW DATA POINT EVERY "MESUREMENTINTERVAL"
+    },
+
+    'TOSH135': {        # home linux-mint toshiba-L770-135-laptop
+                        # ---------------------------------------
+
+        "MESUREMENTINTERVAL": 0.2,  # NEW DATA POINT EVERY "MESUREMENTINTERVAL"
+    },
+
+    'LU-CZC2098L9S': {  # A74 windows-11 office-computer
+                        # ------------------------------
+
+        "MESUREMENTINTERVAL": 0.2,  # NEW DATA POINT EVERY "MESUREMENTINTERVAL"
+    },
+
+}[gethostname().upper()]
+
+
+#####################################################################
+#                                                               FILES
+
+class monitor_file():
+
+    def __init__(self, fp, fn):
+        # record time stamp
+        self.created = strftime(r'%Y%m%dT%H%M%S', localtime())
+        #  new file path (time stamped)
+        fp = fp.rstrip('/')
+        self.fp = f"{fp}/{fn}{self.created}.dat"
+        # force fixed temporary file name for debugging
+        if debug("USETEMPFILE"):
+            fp = configuration['TEMPFILEPATH']
+            fn = configuration['TEMPFILENAME']
+            self.fp = f"{fp}/{fn}"
+            # clear file
+            fh = open(self.fp, "w")
+            fh.close()
+        # declare header text and data list
+        self.headertext, self.data = "", []
+        # setup timer
+        self.time = monotonic() + configuration['SAVINGINTERVALS']
+        # done
+        return
+
+    def flushheader(self, fh):
+        fh.write(self.headertext)
+        self.headertext = None
+        return
+
+    def writeheaderblock(self, b):
+        for i, l in enumerate(b.split(f"\n")[1:-1]):
+            if i == 0: n = len(l) - len(l.lstrip())
+            self.headertext += f"# {l[n:]}\n"
+        return
+
+    def savedata(self):
+        if not self.data: return
+        if monotonic() < self.time: return
+        fh = open(self.fp, "a")
+        if self.headertext: self.flushheader(fh)
+        for d in self.data: fh.write(f"{d}\n")
+        fh.close()
+        self.data = []
+        # reset timer
+        self.time = monotonic() + configuration['SAVINGINTERVALS']
+        # done
+        return
+
+    def writedata(self, datastr):
+        # append line of data
+        self.data.append(datastr)
+        # try saving available data
+        self.savedata()
+        # done
+        return
+
+    def flushdata(self):
+        self.time = monotonic()
+        self.savedata()
+        # done
+        return
+
+#####################################################################
+#                                                           LAKESHORE
+
+class LAKESHORE():
+
+    def __init__(self):
+
+        # get resource manager instance
+        rm = pyvisa.ResourceManager()
+        if debug("LOGGPIB"): print(rm)
+
+        # get list of all visa resources
+        rs = rm.list_resources()
+        if debug("LOGGPIB"): print(rs)
+
+        lsn = configuration["DEVICENAME"]
+
+        if not ((lsn in rs) or debug("NOGPIB")):
+            print(f"failed to find instrument at LakeShore address {lsn}.")
+            exit()
+
+        # record configuration
+        self.rm = rm
+        self.lsn = lsn
+        self.hr = configuration["LAKESHORE_Heater_Resistance"]
+
+        # done
+        return
+
+    def Open(self):
+        # get GPIB handle from the LakeShore visa id
+        if debug("LOGGPIB"): print(f"open_resource('{self.lsn}')")
+        if debug("LOGGPIB") and debug("NOGPIB"): print("skipped...")
+        if debug("NOGPIB"): return
+        self.lsh = self.rm.open_resource(self.lsn)
+        # done
+        return
+
+    def Close(self):
+        # done
+        return
+
+    def Configure(self):
+        # done
+        return
+
+    def Start(self):
+        return
+
+    def Stop(self):
+        return
+
+    def write(self, w):
+        if debug("LOGGPIB"): print(f"{self.lsn} write '{w}'")
+        if debug("LOGGPIB") and debug("NOGPIB"): print("skipped...")
+        if debug("NOGPIB"): return
+        self.lsh.write(w)
+        # done
+        return
+
+    def query(self, w):
+        if debug("LOGGPIB"): print(f"{self.lsn} query '{w}'")
+        if debug("LOGGPIB") and debug("NOGPIB"): print("skipped...")
+        if debug("NOGPIB"): return "1" # dummy string
+        # done
+        return self.lsh.query(w)
+
+    def read(self):
+        T1R = float(self.query(f"RDGR? 1")) # THERMOMETER 1 RESISTANCE
+        T1T = float(self.query(f"RDGK? 1")) # THERMOMETER 1 TEMPERATURE
+        TSP = float(self.query(f"SETP?")) # TEMPERATURE SET POINT
+        HTR = int(self.query(f"HTRRNG?")) # HEATER RANGE
+        HTV = float(self.query(f"HTR?"))  # HEATER VALUE
+        # if debug("NOGPIB"): # return bogus data
+        #     return (1.0, 1.0, 1.0, 1, 1.0)
+        return (T1R, T1T, TSP, HTR, HTV)
+
+    def setpoint(self, t):
+        self.write(f"SETP {t:.3E}")
+        # done
+        return
+
+    def setrange(self, r):
+        self.write(f"HTRRNG {r}")
+        # done
+        return
+
+class scriptcontrol():
+
+    def __init__(self):
+        self.dt = None
+        self.fh = open("./script.txt")
+        self.L = self.fh.read().split("\n")
+        self.ts = time()
+        self.n = 0
+        # done
+        return
+
+    def update(self):
+        
+        # wait until delay timer is up
+        if time() < self.ts: return
+
+        # read lines and update
+        while self.n < len(self.L):
+
+            print(f"{self.n}: {self.L[self.n]}")
+
+            # skip empty string
+            if not self.L[self.n]:
+                self.n += 1
+                continue
+
+            # skip comment
+            if self.L[self.n].lstrip()[0] == "#":
+                self.n += 1
+                continue
+
+            # split elements
+            E = self.L[self.n].split()
+            print(f"{E}")
+
+            # DELAY
+            if E[0].upper() == "DELAY":
+                self.dt = float(E[1])
+                print(f"update delay = {self.dt}")
+                self.n += 1
+                continue
+
+            # RANGE
+            if E[0].upper() == "RANGE":
+                LS.setrange(int(E[1]))
+                self.n += 1
+                continue
+
+            # SETPOINT
+            if E[0].upper() == "SETPOINT":
+                LS.setpoint(float(E[1])/1000.0)
+                self.n += 1
+                break
+
+        # reset timer
+        self.ts = time() + self.dt
+        # done
+        return
+
+    def __del__(self):
+        self.fh.close()
+        # done
+        return
+
 # #####################################################################
 #                                                                  LOOP
 
@@ -360,7 +465,9 @@ def RunningThread():
 
         fh.writedata(w)
 
-        # -------------------- RECALL NEXT DATA POINT -----
+        # ----------------- UPDATE SETPOINT? --------------
+
+        SC.update()
 
 
     # finalise thread
@@ -372,6 +479,7 @@ def RunningThread():
 # INSTANCIATE DEVICES
 
 LS = LAKESHORE()
+SC = scriptcontrol()
 
 # SETUP FILES
 
